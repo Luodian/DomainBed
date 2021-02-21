@@ -102,8 +102,7 @@ class ARM(ERM):
     def __init__(self, input_shape, num_classes, num_domains, hparams):
         original_input_shape = input_shape
         input_shape = (1 + original_input_shape[0],) + original_input_shape[1:]
-        super(ARM, self).__init__(input_shape, num_classes, num_domains,
-                                  hparams)
+        super(ARM, self).__init__(input_shape, num_classes, num_domains, hparams)
         self.context_net = networks.ContextNet(original_input_shape)
         self.support_size = hparams['batch_size']
 
@@ -247,13 +246,13 @@ class IIB(ERM):
         embeddings = torch.cat([curr_dom_embed for curr_dom_embed in self.domain_indx]).to(device)
         all_z = self.featurizer(all_x)
 
-        loss = F.cross_entropy(self.classifier(all_z), all_y)
+        inv_loss = F.cross_entropy(self.classifier(all_z), all_y)
         env_loss = F.cross_entropy(self.env_classifier(torch.cat([all_z, embeddings], 1)), all_y)
-        invariant_risks = loss + self.hparams['lambda_inv_risks'] * (loss - env_loss) ** 2
+        invariant_risks = inv_loss + self.hparams['lambda_inv_risks'] * (inv_loss - env_loss) ** 2
         self.optimizer.zero_grad()
         invariant_risks.backward()
         self.optimizer.step()
-        return {'env_loss': env_loss.item(), 'inv_loss': loss.item(), 'inv_risks_term': invariant_risks.item()}
+        return {'loss_env': env_loss.item(), 'loss_inv': inv_loss.item(), 'loss_diff': invariant_risks.item()}
 
 
 class IRM(ERM):
