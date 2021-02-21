@@ -231,15 +231,29 @@ class IIB(ERM):
 
     def __init__(self, input_shape, num_classes, num_domains, hparams):
         super(IIB, self).__init__(input_shape, num_classes, num_domains, hparams)
-        self.env_classifier = nn.Linear(self.featurizer.n_outputs + 1, self.hparams)
-        self.domain_indx = torch.full()
+        feat_dim = self.featurizer.n_outputs
+        self.env_classifier = nn.Linear(feat_dim + 1, num_classes)
+        self.domain_indx = [torch.full((hparams['batch_size'], 1), indx) for indx in range(num_domains)]
+        self.optimizer = torch.optim.Adam(
+            list(self.featurizer.parameters()) + list(self.classifier.parameters()) + list(self.env_classifier.parameters()),
+            lr=self.hparams["lr"],
+            weight_decay=self.hparams['weight_decay']
+        )
 
     def update(self, minibatches, unlabeled=None):
+        device = "cuda" if minibatches[0][0].is_cuda else "cpu"
         all_x = torch.cat([x for x, y in minibatches])
         all_y = torch.cat([y for x, y in minibatches])
+        embeddings = torch.cat([curr_dom_embed for curr_dom_embed in self.domain_indx]).to(device)
         all_z = self.featurizer(all_x)
+
         loss = F.cross_entropy(self.classifier(all_z), all_y)
-        env_loss = F.cross_entropy(self.env_classifier(torch.cat([])))
+        env_loss = F.cross_entropy(self.env_classifier(torch.cat([all_z, embeddings], 1)), all_y)
+        invariant_risks = loss + self.hparams['lambda_inv_risks'] * (loss - env_loss) ** 2
+        self.optimizer.zero_grad()
+        invariant_risks.backward()
+        self.optimizer.step()
+        return {'env_loss': env_loss.item(), 'inv_loss': loss.item(), 'inv_risks_term': invariant_risks.item()}
 
 
 class IRM(ERM):
