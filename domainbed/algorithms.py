@@ -247,8 +247,9 @@ class IIB(ERM):
         self.env_classifier = nn.Linear(self.hparams['embedding_dim'] + 1, num_classes)
         self.domain_indx = [torch.full((hparams['batch_size'], 1), indx) for indx in range(num_domains)]
         self.optimizer = torch.optim.Adam(
-            list(self.featurizer.parameters()) + list(self.classifier.parameters()) + list(
-                self.env_classifier.parameters()),
+            list(self.featurizer.parameters()) + list(self.inv_classifier.parameters()) + list(
+                self.env_classifier.parameters()) + list(self.encoder.parameters()) + list(
+                self.fc3_mu.parameters()) + list(self.fc3_logvar.parameters()),
             lr=self.hparams["lr"],
             weight_decay=self.hparams['weight_decay']
         )
@@ -279,12 +280,12 @@ class IIB(ERM):
 
         # calculate loss by parts
         ib_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
-        inv_loss = F.cross_entropy(self.classifier(all_z), all_y)
+        inv_loss = F.cross_entropy(self.inv_classifier(all_z), all_y)
         env_loss = F.cross_entropy(self.env_classifier(torch.cat([all_z, embeddings], 1)), all_y)
 
         # use beta to balance the info loss.
         total_loss = inv_loss + self.hparams['lambda_beta'] * ib_loss + self.hparams['lambda_inv_risks'] * (
-                    inv_loss - env_loss) ** 2
+                inv_loss - env_loss) ** 2
         self.optimizer.zero_grad()
         total_loss.backward()
         self.optimizer.step()
