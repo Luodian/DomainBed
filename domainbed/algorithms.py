@@ -231,13 +231,41 @@ class IIB(ERM):
     def __init__(self, input_shape, num_classes, num_domains, hparams):
         super(IIB, self).__init__(input_shape, num_classes, num_domains, hparams)
         feat_dim = self.featurizer.n_outputs
-        self.env_classifier = nn.Linear(feat_dim + 1, num_classes)
+        # VIB archs
+        self.encoder = torch.nn.Sequential(
+            nn.Linear(128, 256),
+            nn.BatchNorm1d(256),
+            nn.ReLU(inplace=True),
+            nn.Linear(256, 512),
+            nn.BatchNorm1d(512),
+            nn.ReLU(inplace=True)
+        )
+        self.fc3_mu = nn.Linear(512, self.hparams['embedding_dim'])  # output = CNN embedding latent variables
+        self.fc3_logvar = nn.Linear(512, self.hparams['embedding_dim'])  # output = CNN embedding latent variables
+        # Inv Risk archs
+        self.inv_classifier = nn.Linear(self.hparams['embedding_dim'], num_classes)
+        self.env_classifier = nn.Linear(self.hparams['embedding_dim'] + 1, num_classes)
         self.domain_indx = [torch.full((hparams['batch_size'], 1), indx) for indx in range(num_domains)]
         self.optimizer = torch.optim.Adam(
-            list(self.featurizer.parameters()) + list(self.classifier.parameters()) + list(self.env_classifier.parameters()),
+            list(self.featurizer.parameters()) + list(self.classifier.parameters()) + list(
+                self.env_classifier.parameters()),
             lr=self.hparams["lr"],
             weight_decay=self.hparams['weight_decay']
         )
+
+    def encoder_fun(self, res_feat):
+        latent_z = self.encoder(res_feat)
+        mu = self.fc3_mu(latent_z)
+        logvar = self.fc3_logvar(latent_z)
+        return mu, logvar
+
+    def reparameterize(self, mu, logvar):
+        if self.training:
+            std = torch.exp(logvar / 2)
+            eps = torch.randn_like(std)
+            return torch.add(torch.mul(std, eps), mu)
+        else:
+            return mu
 
     def update(self, minibatches, unlabeled=None):
         device = "cuda" if minibatches[0][0].is_cuda else "cpu"
@@ -245,14 +273,29 @@ class IIB(ERM):
         all_y = torch.cat([y for x, y in minibatches])
         embeddings = torch.cat([curr_dom_embed for curr_dom_embed in self.domain_indx]).to(device)
         all_z = self.featurizer(all_x)
+        # encode feature to sampling vector: \mu, \var
+        mu, logvar = self.encoder_fun(all_z)
+        all_z = self.reparameterize(mu, logvar)
 
+        # calculate loss by parts
+        ib_loss = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp())
         inv_loss = F.cross_entropy(self.classifier(all_z), all_y)
         env_loss = F.cross_entropy(self.env_classifier(torch.cat([all_z, embeddings], 1)), all_y)
-        invariant_risks = inv_loss + self.hparams['lambda_inv_risks'] * (inv_loss - env_loss) ** 2
+
+        # use beta to balance the info loss.
+        total_loss = inv_loss + self.hparams['lambda_beta'] * ib_loss + self.hparams['lambda_inv_risks'] * (
+                    inv_loss - env_loss) ** 2
         self.optimizer.zero_grad()
-        invariant_risks.backward()
+        total_loss.backward()
         self.optimizer.step()
-        return {'loss_env': env_loss.item(), 'loss_inv': inv_loss.item(), 'loss_diff': invariant_risks.item()}
+        return {'loss_env': env_loss.item(), 'loss_inv': inv_loss.item(), 'loss_all': total_loss.item()}
+
+    def predict(self, x):
+        z = self.featurizer(x)
+        mu, logvar = self.encoder_fun(z)
+        z = self.reparameterize(mu, logvar)
+        y = self.inv_classifier(z)
+        return y
 
 
 class IRM(ERM):
